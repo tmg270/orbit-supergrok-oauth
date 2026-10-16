@@ -15,10 +15,10 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+      - name: Download org.json
+        run: curl -sL -o org.json.jar https://repo1.maven.org/maven2/org/json/json/20240303/json-20240303.jar
       - name: Compile SuperGrokAuth.java
         run: |
           mkdir -p build
-          # org.json is not in the JDK; use a minimal stub or note the dependency
-          # For CI we compile against a downloaded org.json if needed, or treat as documentation.
-          javac --release 17 -d build src/main/java/com/example/supergrok/SuperGrokAuth.java || echo "Compile may need org.json on classpath; see notes"
-          echo "Sketch compiled (or noted dependency). This is not an Android APK build."
+          javac --release 17 -cp org.json.jar -d build src/main/java/com/example/supergrok/SuperGrokAuth.java
+          echo "Sketch compiled successfully."
