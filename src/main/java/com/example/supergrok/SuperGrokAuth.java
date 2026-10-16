@@ -20,7 +20,8 @@ import java.util.concurrent.locks.ReentrantLock;
 /**
  * Java sketch of SuperGrok device-code OAuth.
  * Addresses: RFC 8628 error parsing, refresh-token preservation,
- * single-flight refresh, 403 as no-entitlement, timeouts, no token leak in toString.
+ * single-flight refresh that re-reads after the lock, 403 as no-entitlement,
+ * timeouts, no token leak in toString.
  * Not wired into any Android app.
  */
 public class SuperGrokAuth {
@@ -34,6 +35,8 @@ public class SuperGrokAuth {
     private static final int READ_TIMEOUT_MS = 30000;
     private static final int DEFAULT_EXPIRES_IN = 1800;
     private static final ReentrantLock REFRESH_LOCK = new ReentrantLock();
+    // Sketch-only stand-in for a store. A real integration re-reads SecureStore here.
+    private static volatile Session lastKnownSession;
 
     public static class DeviceCode {
         public final String deviceCode;
@@ -116,7 +119,9 @@ public class SuperGrokAuth {
                 JSONObject json = postForm(TOKEN_URL, body);
                 String error = json.optString("error", null);
                 if (error == null) {
-                    return toSession(json, null);
+                    Session s = toSession(json, null);
+                    lastKnownSession = s;
+                    return s;
                 }
                 switch (error) {
                     case "authorization_pending":
@@ -140,25 +145,33 @@ public class SuperGrokAuth {
         throw new OAuthException("Device authorization timed out");
     }
 
-    public static Session refresh(Session current) throws IOException, OAuthException {
-        if (current.refreshToken == null || current.refreshToken.isEmpty()) {
-            throw new OAuthException("No refresh token");
-        }
+    public static Session refresh(Session callerSeen) throws IOException, OAuthException {
         REFRESH_LOCK.lock();
         try {
+            // Re-read after the lock. A real store (SecureStore) would be read here.
+            Session now = lastKnownSession != null ? lastKnownSession : callerSeen;
+            if (now == null || now.refreshToken == null || now.refreshToken.isEmpty()) {
+                throw new OAuthException("No refresh token");
+            }
+            // If another caller already refreshed, use that result.
+            if (lastKnownSession != null && lastKnownSession.expiresAt > System.currentTimeMillis() + 60_000) {
+                return lastKnownSession;
+            }
             String body = "grant_type=refresh_token"
                     + "&client_id=" + urlEncode(CLIENT_ID)
-                    + "&refresh_token=" + urlEncode(current.refreshToken);
+                    + "&refresh_token=" + urlEncode(now.refreshToken);
             JSONObject json = postForm(TOKEN_URL, body);
             String error = json.optString("error", null);
             if (error != null) {
                 if ("invalid_grant".equals(error)) {
+                    lastKnownSession = null;
                     throw new OAuthException("Refresh rejected; re-authenticate", error);
                 }
                 throw new OAuthException(json.optString("error_description", error), error);
             }
-            // Preserve old refresh token if the response omits a new one
-            return toSession(json, current.refreshToken);
+            Session updated = toSession(json, now.refreshToken);
+            lastKnownSession = updated;
+            return updated;
         } finally {
             REFRESH_LOCK.unlock();
         }
