@@ -1,38 +1,43 @@
-# Orbit SuperGrok OAuth
+# orbit-supergrok-oauth
 
-Proof-of-concept and integration guide for adding **SuperGrok / X Premium+ OAuth** (device-code flow) to Android AI assistants such as [Orbit Assistant](https://github.com/lpnovi/Orbit-Assistant).
+**Sketch and integration notes only.** This is not a working, tested, drop-in client for Orbit Assistant or any other app.
 
-This lets users sign in with their existing SuperGrok subscription instead of generating a separate xAI API key and buying credits.
+It contains a Java sketch of the SuperGrok / xAI device-code OAuth flow (RFC 8628) that other tools use, plus documentation on the risks and the work required to integrate it into a fork of Orbit Assistant.
 
-## How it works
+## Important warnings
 
-Uses the same public device-code (RFC 8628) flow that the official Grok CLI, Hermes Agent, OpenClaw, and other tools use:
-
-- Client ID: `b1a00492-073a-47ea-816f-4c329264a828` (public Grok CLI client)
-- Device code endpoint: `https://auth.x.ai/oauth2/device/code`
-- Token endpoint: `https://auth.x.ai/oauth2/token`
-- Scope: `openid profile email offline_access grok-cli:access api:access`
-- API calls go to `https://api.x.ai/v1` with the access token as Bearer.
-
-After approval the access token is refreshed in the background using the refresh token. Tokens should be stored in Android Keystore (same as Orbit already does for API keys).
+- **Terms / ban risk**: The client ID `b1a00492-073a-47ea-816f-4c329264a828` is the official Grok CLI client. xAI has no public third-party client registration and no documented permission to reuse it. Doing so means impersonating the official CLI. xAI's AUP and ToS allow account suspension. This is fine at most for personal experimentation. The sanctioned route is an API key from console.x.ai.
+- **API surface unproven**: No official xAI documentation confirms that a SuperGrok subscription token works as a Bearer token on `https://api.x.ai/v1/chat/completions`. Some tools use the Responses API; others use proxy endpoints. Orbit currently only calls `/v1/chat/completions`. A real successful call with a token from this flow must be proven before any production use.
+- **403 by tier**: Login can succeed while subsequent requests or refreshes return 403 depending on the SuperGrok tier. Re-login does not help. Treat 403 as "no entitlement" and fall back to an API key.
+- **Not Orbit-compatible as-is**: Orbit Assistant is Java-only (no Kotlin, no OkHttp, no kotlinx.serialization, no coroutines). It uses `HttpURLConnection` and `org.json`. This sketch is written in Java with `HttpURLConnection` to match that style, but it is still not wired into Orbit's provider system.
 
 ## Contents
 
-- `SuperGrokOAuth.kt` — Kotlin implementation of the device-code flow + token refresh.
-- `INTEGRATION.md` — Notes on wiring this into an Orbit-style provider.
+- `src/main/java/com/example/supergrok/SuperGrokAuth.java` — Java sketch of device-code login, polling, and refresh. Uses only JDK + Android-compatible APIs. Addresses several review issues (RFC 8628 error parsing, refresh-token preservation, 403 handling, timeouts, no token leak in toString).
+- `INTEGRATION.md` — Accurate notes on what a real Orbit fork would require.
+- `.github/workflows/build.yml` — Minimal CI that compiles the Java sketch.
 
-## Quick test (conceptual)
+## What this does not include
 
-1. Call `requestDeviceCode()`.
-2. Show the user the `verification_uri_complete` (or URI + user code).
-3. Poll `pollForToken()` until success or timeout.
-4. Store the tokens securely.
-5. Use the access token for chat completions against `https://api.x.ai/v1/chat/completions` (or Responses API).
+- A full Android app or APK.
+- Storage in Android Keystore / SecureStore.
+- UI for sign-in.
+- Integration with Orbit's `AiProvider`, `Prefs`, model catalog, or device-action flags.
+- Proof that a token from this flow can complete a chat completion on a real SuperGrok account.
+- Any permission or endorsement from xAI.
 
-## Caveats
+## Open-source Android assistants (fact corrections)
 
-xAI has been observed to return HTTP 403 for some SuperGrok tiers on the OAuth API surface even when the in-app subscription is active. If that happens, fall back to an API key path. This is an unofficial integration; endpoints or client IDs can change.
+Several exist. Examples with sources:
+
+- Orbit Assistant: https://github.com/lpnovi/Orbit-Assistant (MPL-2.0, Java)
+- AI-Buddy: https://github.com/Weltenwanderer1/ai-buddy (MIT, Flutter)
+- BetterAIChat: https://github.com/Verlintas/BetterAIChat (MIT)
+- Gotcha: https://github.com/samosa-ai-com/Gotcha (AGPL-3.0)
+- Ophoner: https://github.com/aaditagrawal/ophoner
+
+Ferri was not located. Claims that the official Grok app or Grok Bot cannot be registered as Android's default digital assistant were not verified against source.
 
 ## License
 
-MIT. Orbit Assistant itself is MPL-2.0; any fork must respect that.
+MIT. Any fork of Orbit Assistant must retain Orbit's MPL-2.0 LICENSE and notices.
