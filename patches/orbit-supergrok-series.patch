@@ -1,0 +1,720 @@
+From 65f16acfc630a544f307f6fb86cc06dee7c50c15 Mon Sep 17 00:00:00 2001
+From: plan <x@x>
+Date: Fri, 16 Oct 2026 23:20:41 +0100
+Subject: [PATCH] Rename applicationId
+
+---
+ app/build.gradle | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/app/build.gradle b/app/build.gradle
+index 9279b9b..7dcd1ee 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -45,7 +45,7 @@ android {
+     compileSdk 36
+ 
+     defaultConfig {
+-        applicationId 'com.orbit.assistant'
++        applicationId 'com.tmg270.orbit'
+         minSdk 29
+         targetSdk 36
+         versionCode 818
+-- 
+2.47.3
+
+From 0ae153ef716e11831f4c934daaee6fd6d7c73717 Mon Sep 17 00:00:00 2001
+From: plan <x@x>
+Date: Fri, 16 Oct 2026 23:20:41 +0100
+Subject: [PATCH] Fork: disable self-update and Orbit Local install; package
+ from BuildConfig
+
+---
+ .../main/java/com/orbit/assistant/OrbitDistribution.java    | 6 +++---
+ app/src/main/java/com/orbit/assistant/OrbitUpdater.java     | 2 +-
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/app/src/main/java/com/orbit/assistant/OrbitDistribution.java b/app/src/main/java/com/orbit/assistant/OrbitDistribution.java
+index 7d83573..6e5caca 100644
+--- a/app/src/main/java/com/orbit/assistant/OrbitDistribution.java
++++ b/app/src/main/java/com/orbit/assistant/OrbitDistribution.java
+@@ -42,7 +42,7 @@ public final class OrbitDistribution {
+             "Orbit updates are delivered by Google Play. Google Play installs new versions for you, "
+                     + "the same way it updates your other apps.";
+ 
+-    private static final String PACKAGE_NAME = "com.orbit.assistant";
++    private static final String PACKAGE_NAME = BuildConfig.APPLICATION_ID;
+ 
+     private OrbitDistribution() {}
+ 
+@@ -57,12 +57,12 @@ public final class OrbitDistribution {
+ 
+     /** Whether Orbit may check GitHub for, download, and install its own updates. */
+     public static boolean selfUpdates() {
+-        return selfUpdates(current());
++        return false; // fork: never pull/install upstream-signed Orbit APKs
+     }
+ 
+     /** Whether Orbit may download the Orbit Local component APK and hand it to Android. */
+     public static boolean installsOrbitLocalComponent() {
+-        return installsOrbitLocalComponent(current());
++        return false; // fork: Orbit Local is signature-bound to upstream's key
+     }
+ 
+     /**
+diff --git a/app/src/main/java/com/orbit/assistant/OrbitUpdater.java b/app/src/main/java/com/orbit/assistant/OrbitUpdater.java
+index 6f34c67..324b56e 100644
+--- a/app/src/main/java/com/orbit/assistant/OrbitUpdater.java
++++ b/app/src/main/java/com/orbit/assistant/OrbitUpdater.java
+@@ -55,7 +55,7 @@ public final class OrbitUpdater {
+      */
+     private static final int MAX_MANIFEST_FETCHES = 4;
+     private static final String UPDATE_MANIFEST_NAME = "orbit-update.json";
+-    private static final String PACKAGE_NAME = "com.orbit.assistant";
++    private static final String PACKAGE_NAME = BuildConfig.APPLICATION_ID;
+     private static final String CERTIFICATE_SHA256 =
+             "7D:AD:61:93:85:DF:F1:1E:C7:31:AA:55:5F:2B:44:8A:94:3C:73:91:81:3D:1A:94:DF:1C:B4:23:2E:CD:41:E3";
+     private static final int SCHEMA = 1;
+-- 
+2.47.3
+
+From 793529f106d1fddba77cc1cfdbabeeae93db5c52 Mon Sep 17 00:00:00 2001
+From: patch <patch@local>
+Date: Fri, 16 Oct 2026 23:21:16 +0100
+Subject: [PATCH 1/5] SecureStore: Keystore-encrypted SuperGrok OAuth session
+
+---
+ .../java/com/orbit/assistant/SecureStore.java | 55 +++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/app/src/main/java/com/orbit/assistant/SecureStore.java b/app/src/main/java/com/orbit/assistant/SecureStore.java
+index a36d798..16d69d6 100644
+--- a/app/src/main/java/com/orbit/assistant/SecureStore.java
++++ b/app/src/main/java/com/orbit/assistant/SecureStore.java
+@@ -36,6 +36,10 @@ public final class SecureStore {
+     private static final String XAI_ALIAS = "orbit_xai_key_v1";
+     private static final String XAI_ENC = "xai_key_enc";
+     private static final String XAI_IV = "xai_key_iv";
++    // SuperGrok OAuth session (fork patch). Keystore-only, no plaintext fallback.
++    private static final String SUPERGROK_ALIAS = "orbit_supergrok_oauth_v1";
++    private static final String SUPERGROK_ENC = "supergrok_oauth_enc";
++    private static final String SUPERGROK_IV = "supergrok_oauth_iv";
+ 
+     private SecureStore() {}
+ 
+@@ -168,6 +172,47 @@ public final class SecureStore {
+         AutoPermissions.revokeOnCredentialRemoval(c, Prefs.PROVIDER_XAI);
+     }
+ 
++    /** Stores the SuperGrok OAuth session encrypted with its own Keystore key. False if it could not. */
++    public static boolean saveSuperGrokSession(Context c, String access, String refresh, long expiresAtMs) {
++        if (access == null || access.isEmpty()) return false;
++        try {
++            JSONObject o = new JSONObject();
++            o.put("access_token", access);
++            o.put("refresh_token", refresh == null ? "" : refresh);
++            o.put("expires_at_ms", expiresAtMs);
++            o.put("saved_at", System.currentTimeMillis());
++            return encrypt(c, SUPERGROK_ALIAS, SUPERGROK_ENC, SUPERGROK_IV, o.toString());
++        } catch (Exception e) {
++            return false;
++        }
++    }
++
++    public static SuperGrokSession loadSuperGrokSession(Context c) {
++        try {
++            String raw = decrypt(c, SUPERGROK_ALIAS, SUPERGROK_ENC, SUPERGROK_IV);
++            if (raw.isEmpty()) return null;
++            JSONObject o = new JSONObject(raw);
++            String access = o.optString("access_token", "");
++            if (access.isEmpty()) return null;
++            return new SuperGrokSession(access, o.optString("refresh_token", ""),
++                    o.optLong("expires_at_ms", 0L));
++        } catch (Exception e) {
++            return null;
++        }
++    }
++
++    public static boolean hasSuperGrokSession(Context c) { return loadSuperGrokSession(c) != null; }
++
++    public static void clearSuperGrokSession(Context c) {
++        Prefs.get(c).edit().remove(SUPERGROK_ENC).remove(SUPERGROK_IV).commit();
++        if (!hasXaiKey(c)) AutoPermissions.revokeOnCredentialRemoval(c, Prefs.PROVIDER_XAI);
++    }
++
++    /** True when xAI can be reached with either a developer key or a SuperGrok session. */
++    public static boolean hasXaiCredential(Context c) {
++        return hasXaiKey(c) || hasSuperGrokSession(c);
++    }
++
+     private static boolean saveApiKey(Context c, String alias, String enc, String iv, String value) {
+         try {
+             if (value == null || value.trim().isEmpty()) {
+@@ -333,4 +378,14 @@ public final class SecureStore {
+             this.expiresAtMs = expiresAtMs;
+         }
+     }
++
++    public static final class SuperGrokSession {
++        public final String accessToken;
++        public final String refreshToken;
++        public final long expiresAtMs;
++        SuperGrokSession(String access, String refresh, long expiresAt) {
++            accessToken = access; refreshToken = refresh; expiresAtMs = expiresAt;
++        }
++        @Override public String toString() { return "SuperGrokSession{expiresAtMs=" + expiresAtMs + "}"; }
++    }
+ }
+-- 
+2.47.3
+
+From d4091fb942cf0646d76a4001cb74c86152e071e8 Mon Sep 17 00:00:00 2001
+From: patch <patch@local>
+Date: Fri, 16 Oct 2026 23:21:33 +0100
+Subject: [PATCH 2/5] Add SuperGrokAuth: device-code sign-in with single-flight
+ refresh
+
+---
+ .../com/orbit/assistant/SuperGrokAuth.java    | 262 ++++++++++++++++++
+ 1 file changed, 262 insertions(+)
+ create mode 100644 app/src/main/java/com/orbit/assistant/SuperGrokAuth.java
+
+diff --git a/app/src/main/java/com/orbit/assistant/SuperGrokAuth.java b/app/src/main/java/com/orbit/assistant/SuperGrokAuth.java
+new file mode 100644
+index 0000000..ba5b6bc
+--- /dev/null
++++ b/app/src/main/java/com/orbit/assistant/SuperGrokAuth.java
+@@ -0,0 +1,262 @@
++// SPDX-License-Identifier: MPL-2.0
++// Fork patch. UNVERIFIED: the client id, endpoints and scope come from
++// github.com/tmg270/orbit-supergrok-oauth and have not been confirmed against a live
++// SuperGrok account or by xAI. Using another product's OAuth client may breach xAI terms.
++package com.orbit.assistant;
++
++import android.content.Context;
++import android.os.Handler;
++import android.os.Looper;
++
++import org.json.JSONException;
++import org.json.JSONObject;
++
++import java.io.BufferedReader;
++import java.io.IOException;
++import java.io.InputStream;
++import java.io.InputStreamReader;
++import java.io.OutputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.net.URLEncoder;
++import java.nio.charset.StandardCharsets;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++
++/**
++ * SuperGrok device-code (RFC 8628) sign-in for the xAI provider. Tokens live only in
++ * {@link SecureStore} (Android Keystore). Refresh is single-flight: callers serialize on a lock
++ * and re-read the stored session first, so a rotated refresh token is never reused.
++ */
++final class SuperGrokAuth {
++    static final String CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
++    static final String DEVICE_CODE_URL = "https://auth.x.ai/oauth2/device/code";
++    static final String TOKEN_URL = "https://auth.x.ai/oauth2/token";
++    static final String SCOPE = "openid profile email offline_access grok-cli:access api:access";
++    private static final String DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
++    private static final long REFRESH_SKEW_MS = 120_000L;
++    private static final int DEFAULT_EXPIRES_IN = 1800;
++
++    private static final ExecutorService EXEC = Executors.newCachedThreadPool();
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++    private static final Object REFRESH_LOCK = new Object();
++    private static volatile long activeAttempt;
++
++    private SuperGrokAuth() {}
++
++    static final class DeviceCode {
++        final String deviceCode, userCode, verificationUri, verificationUriComplete;
++        final long expiresAtMs;
++        final int intervalSeconds;
++        final long attempt;
++        DeviceCode(String dc, String uc, String uri, String complete, long exp, int interval, long attempt) {
++            deviceCode = dc; userCode = uc; verificationUri = uri; verificationUriComplete = complete;
++            expiresAtMs = exp; intervalSeconds = interval; this.attempt = attempt;
++        }
++        /** The page to open: the prefilled one when it is a trusted x.ai https URL. */
++        String browserUrl() {
++            return trusted(verificationUriComplete) ? verificationUriComplete : verificationUri;
++        }
++    }
++
++    interface StartCallback { void onCode(DeviceCode code); void onError(String message); }
++    interface DoneCallback { void onSignedIn(); void onError(String message); }
++
++    static final class AuthException extends Exception {
++        final String code;
++        AuthException(String message, String code) { super(message); this.code = code; }
++    }
++
++    // ---- sign-in -------------------------------------------------------------------------------
++
++    static void start(StartCallback cb) {
++        EXEC.execute(() -> {
++            try {
++                Response r = post(DEVICE_CODE_URL, "client_id=" + enc(CLIENT_ID) + "&scope=" + enc(SCOPE));
++                JSONObject o = r.json;
++                if (!r.ok() || o.has("error")) throw fail(r, "Could not start SuperGrok sign-in");
++                String dc = o.optString("device_code", ""), uc = o.optString("user_code", "");
++                String uri = o.optString("verification_uri", "");
++                if (dc.isEmpty() || uc.isEmpty() || !trusted(uri)) {
++                    throw new AuthException("xAI returned an incomplete or untrusted sign-in response.", "bad_response");
++                }
++                long attempt = System.nanoTime();
++                activeAttempt = attempt;
++                DeviceCode code = new DeviceCode(dc, uc, uri, o.optString("verification_uri_complete", ""),
++                        System.currentTimeMillis() + o.optInt("expires_in", 900) * 1000L,
++                        Math.max(1, o.optInt("interval", 5)), attempt);
++                MAIN.post(() -> cb.onCode(code));
++            } catch (Exception e) {
++                String m = message(e);
++                MAIN.post(() -> cb.onError(m));
++            }
++        });
++    }
++
++    /** Polls until approval, denial, expiry or {@link #cancel()}. Saves the session on success. */
++    static void awaitApproval(Context context, DeviceCode code, DoneCallback cb) {
++        Context app = context.getApplicationContext();
++        EXEC.execute(() -> {
++            int interval = code.intervalSeconds;
++            try {
++                while (System.currentTimeMillis() < code.expiresAtMs && activeAttempt == code.attempt) {
++                    Thread.sleep(interval * 1000L);
++                    if (activeAttempt != code.attempt) return;
++                    Response r = post(TOKEN_URL, "grant_type=" + enc(DEVICE_GRANT) + "&client_id="
++                            + enc(CLIENT_ID) + "&device_code=" + enc(code.deviceCode));
++                    String error = r.json.optString("error", "");
++                    if (r.ok() && error.isEmpty()) {
++                        store(app, r.json, "");
++                        Prefs.get(app).edit().putString(Prefs.PROVIDER, Prefs.PROVIDER_XAI).apply();
++                        MAIN.post(cb::onSignedIn);
++                        return;
++                    }
++                    if ("authorization_pending".equals(error)) continue;
++                    if ("slow_down".equals(error)) { interval += 5; continue; }
++                    throw fail(r, "SuperGrok sign-in failed");
++                }
++                if (activeAttempt == code.attempt) {
++                    MAIN.post(() -> cb.onError("The SuperGrok code expired. Start sign-in again."));
++                }
++            } catch (InterruptedException e) {
++                Thread.currentThread().interrupt();
++            } catch (Exception e) {
++                String m = message(e);
++                MAIN.post(() -> cb.onError(m));
++            }
++        });
++    }
++
++    static void cancel() { activeAttempt = 0; }
++
++    static void signOut(Context context) {
++        cancel();
++        SecureStore.clearSuperGrokSession(context);
++    }
++
++    // ---- tokens --------------------------------------------------------------------------------
++
++    /**
++     * A usable access token, refreshing first when it is near expiry or {@code forceRefresh}.
++     * Blocking network call: never run on the main thread. Returns "" when signed out; throws
++     * {@link AuthException} on failure (and clears the session on invalid_grant).
++     */
++    static String validAccessToken(Context context, boolean forceRefresh) throws IOException, AuthException {
++        if (Looper.myLooper() == Looper.getMainLooper()) throw new IllegalStateException("network on main thread");
++        Context app = context.getApplicationContext();
++        SecureStore.SuperGrokSession seen = SecureStore.loadSuperGrokSession(app);
++        if (seen == null) return "";
++        if (!forceRefresh && !nearExpiry(seen)) return seen.accessToken;
++        synchronized (REFRESH_LOCK) {
++            SecureStore.SuperGrokSession now = SecureStore.loadSuperGrokSession(app);
++            if (now == null) return "";
++            // Another caller refreshed while this one waited: use its result, do not reuse the old refresh token.
++            if (!now.refreshToken.equals(seen.refreshToken) || !now.accessToken.equals(seen.accessToken)) {
++                if (!nearExpiry(now)) return now.accessToken;
++            } else if (!forceRefresh && !nearExpiry(now)) {
++                return now.accessToken;
++            }
++            if (now.refreshToken.isEmpty()) {
++                SecureStore.clearSuperGrokSession(app);
++                throw new AuthException("SuperGrok session expired. Sign in again.", "no_refresh_token");
++            }
++            Response r = post(TOKEN_URL, "grant_type=refresh_token&client_id=" + enc(CLIENT_ID)
++                    + "&refresh_token=" + enc(now.refreshToken));
++            String error = r.json.optString("error", "");
++            if ("invalid_grant".equals(error)) {
++                SecureStore.clearSuperGrokSession(app);
++                throw new AuthException("SuperGrok session ended. Sign in again.", error);
++            }
++            if (!r.ok() || !error.isEmpty()) throw fail(r, "Could not renew the SuperGrok session");
++            return store(app, r.json, now.refreshToken);
++        }
++    }
++
++    private static boolean nearExpiry(SecureStore.SuperGrokSession s) {
++        return s.expiresAtMs <= System.currentTimeMillis() + REFRESH_SKEW_MS;
++    }
++
++    private static String store(Context app, JSONObject o, String previousRefresh) throws AuthException {
++        String access = o.optString("access_token", "");
++        if (access.isEmpty()) throw new AuthException("xAI returned no access token.", "bad_response");
++        String refresh = o.optString("refresh_token", "");
++        if (refresh.isEmpty()) refresh = previousRefresh;
++        long expiresAt = System.currentTimeMillis() + o.optInt("expires_in", DEFAULT_EXPIRES_IN) * 1000L;
++        if (!SecureStore.saveSuperGrokSession(app, access, refresh, expiresAt)) {
++            throw new AuthException("Signed in, but Orbit could not save the session in Android Keystore.", "store_failed");
++        }
++        return access;
++    }
++
++    // ---- http ----------------------------------------------------------------------------------
++
++    private static final class Response {
++        final int code; final JSONObject json;
++        Response(int code, JSONObject json) { this.code = code; this.json = json; }
++        boolean ok() { return code >= 200 && code < 300; }
++    }
++
++    private static Response post(String url, String form) throws IOException {
++        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
++        try {
++            conn.setRequestMethod("POST");
++            conn.setInstanceFollowRedirects(false);
++            conn.setConnectTimeout(15_000);
++            conn.setReadTimeout(30_000);
++            conn.setDoOutput(true);
++            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
++            conn.setRequestProperty("Accept", "application/json");
++            try (OutputStream os = conn.getOutputStream()) { os.write(form.getBytes(StandardCharsets.UTF_8)); }
++            int code = conn.getResponseCode();
++            String body = read(code >= 200 && code < 300 ? conn.getInputStream() : conn.getErrorStream());
++            JSONObject json;
++            try { json = body.isEmpty() ? new JSONObject() : new JSONObject(body); }
++            catch (JSONException e) { json = new JSONObject(); }
++            return new Response(code, json);
++        } finally {
++            conn.disconnect();
++        }
++    }
++
++    private static AuthException fail(Response r, String prefix) {
++        if (r.code == 403) {
++            return new AuthException("xAI refused this account (403). This SuperGrok tier may not allow API access; use an API key instead.", "forbidden");
++        }
++        String error = r.json.optString("error", "http_" + r.code);
++        if ("access_denied".equals(error)) return new AuthException("Sign-in was declined.", error);
++        if ("expired_token".equals(error)) return new AuthException("The SuperGrok code expired. Start sign-in again.", error);
++        // error_description is server text; keep it out of logs, show only a short prefix + code.
++        return new AuthException(prefix + " (" + error + ").", error);
++    }
++
++    private static String read(InputStream in) throws IOException {
++        if (in == null) return "";
++        StringBuilder sb = new StringBuilder();
++        try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
++            char[] buf = new char[4096]; int n;
++            while ((n = r.read(buf)) > 0) sb.append(buf, 0, n);
++        }
++        return sb.toString();
++    }
++
++    private static boolean trusted(String uri) {
++        if (uri == null || uri.isEmpty()) return false;
++        try {
++            URL u = new URL(uri);
++            String host = u.getHost().toLowerCase(java.util.Locale.US);
++            return "https".equals(u.getProtocol()) && (host.equals("x.ai") || host.endsWith(".x.ai")
++                    || host.equals("grok.com") || host.endsWith(".grok.com"));
++        } catch (Exception e) {
++            return false;
++        }
++    }
++
++    private static String enc(String s) {
++        try { return URLEncoder.encode(s, "UTF-8"); } catch (Exception e) { return s; }
++    }
++
++    private static String message(Exception e) {
++        if (e instanceof AuthException) return e.getMessage();
++        return "Could not reach xAI. Check the connection and try again.";
++    }
++}
+-- 
+2.47.3
+
+From bf29c4cde1cae86991e556da5d95ac42cee48549 Mon Sep 17 00:00:00 2001
+From: patch <patch@local>
+Date: Fri, 16 Oct 2026 23:21:52 +0100
+Subject: [PATCH 3/5] XaiProvider/catalog: use SuperGrok OAuth token when no
+ API key is saved
+
+---
+ .../assistant/ProviderCatalogRepository.java  | 11 +++-
+ .../java/com/orbit/assistant/XaiProvider.java | 60 +++++++++++++------
+ 2 files changed, 51 insertions(+), 20 deletions(-)
+
+diff --git a/app/src/main/java/com/orbit/assistant/ProviderCatalogRepository.java b/app/src/main/java/com/orbit/assistant/ProviderCatalogRepository.java
+index 7476f4d..30e3961 100644
+--- a/app/src/main/java/com/orbit/assistant/ProviderCatalogRepository.java
++++ b/app/src/main/java/com/orbit/assistant/ProviderCatalogRepository.java
+@@ -330,7 +330,14 @@ public final class ProviderCatalogRepository {
+                     models = parseAnthropic(get(ANTHROPIC_URL, "x-api-key", key, true));
+                 } else if (Prefs.PROVIDER_XAI.equals(provider)) {
+                     String key = SecureStore.loadXaiKey(app);
+-                    if (key.isEmpty()) throw new CatalogException("Add an xAI API key first.");
++                    if (key.isEmpty()) {
++                        try {
++                            key = SuperGrokAuth.validAccessToken(app, false);
++                        } catch (SuperGrokAuth.AuthException e) {
++                            throw new CatalogException(e.getMessage());
++                        }
++                    }
++                    if (key.isEmpty()) throw new CatalogException("Add an xAI API key or sign in with SuperGrok first.");
+                     models = parseXai(get(XAI_URL, "Authorization", "Bearer " + key, false));
+                 } else if (Prefs.PROVIDER_OPENROUTER.equals(provider)) {
+                     String key = SecureStore.loadOpenRouterKey(app);
+@@ -372,7 +379,7 @@ public final class ProviderCatalogRepository {
+     public static void refreshIfStale(Context c, String provider, Callback callback) {
+         boolean configured = Prefs.PROVIDER_ANTHROPIC.equals(provider)
+                 ? SecureStore.hasAnthropicKey(c)
+-                : Prefs.PROVIDER_XAI.equals(provider) ? SecureStore.hasXaiKey(c)
++                : Prefs.PROVIDER_XAI.equals(provider) ? SecureStore.hasXaiCredential(c)
+                 : Prefs.PROVIDER_OPENROUTER.equals(provider) && SecureStore.hasOpenRouterKey(c);
+         if (!configured) return;
+         long refreshedAt = Prefs.PROVIDER_OPENROUTER.equals(provider)
+diff --git a/app/src/main/java/com/orbit/assistant/XaiProvider.java b/app/src/main/java/com/orbit/assistant/XaiProvider.java
+index eaf04b9..24b6e5e 100644
+--- a/app/src/main/java/com/orbit/assistant/XaiProvider.java
++++ b/app/src/main/java/com/orbit/assistant/XaiProvider.java
+@@ -14,39 +14,63 @@ final class XaiProvider implements AiProvider {
+     @Override public String description() { return "Grok models through xAI's official developer API."; }
+     @Override public AiCapabilities capabilities() { return CAPABILITIES; }
+     @Override public Status status(Context context) {
+-        return SecureStore.hasXaiKey(context) ? Status.READY : Status.NEEDS_SETUP;
++        return SecureStore.hasXaiCredential(context) ? Status.READY : Status.NEEDS_SETUP;
+     }
+     @Override public String statusDetail(Context context) {
+-        return SecureStore.hasXaiKey(context) ? "API key saved" : "API key required";
++        if (SecureStore.hasXaiKey(context)) return "API key saved";
++        return SecureStore.hasSuperGrokSession(context) ? "Signed in with SuperGrok"
++                : "API key or SuperGrok sign-in required";
+     }
+     @Override public boolean selectable(Context context) { return true; }
+ 
+     @Override public void send(Context context, AiRequest request, AssistantClient.Callback callback) {
+-        String key = SecureStore.loadXaiKey(context);
+-        if (key.isEmpty()) {
+-            callback.onError("Add an xAI API key in Settings > AI Providers first.");
+-            return;
+-        }
+-        ApiKeyProviderClient.send(context, id(), key, request, callback);
++        withCredential(context, callback::onError,
++                key -> ApiKeyProviderClient.send(context, id(), key, request, callback));
+     }
+ 
+     @Override public void plan(Context context, String prompt, AiSelection selection,
+                                AssistantClient.PlanCallback callback) {
+-        String key = SecureStore.loadXaiKey(context);
+-        if (key.isEmpty()) { callback.onError("Add an xAI API key first."); return; }
+-        ApiKeyProviderClient.complete(context, id(), key, AiSelections.resolve(selection),
+-                "Return only the requested valid JSON. Do not add Markdown fences.", prompt,
+-                callback);
++        withCredential(context, callback::onError,
++                key -> ApiKeyProviderClient.complete(context, id(), key, AiSelections.resolve(selection),
++                        "Return only the requested valid JSON. Do not add Markdown fences.", prompt,
++                        callback));
+     }
+ 
+-    @Override public boolean supportsCompletion(Context context) { return SecureStore.hasXaiKey(context); }
++    @Override public boolean supportsCompletion(Context context) { return SecureStore.hasXaiCredential(context); }
+ 
+     @Override public void complete(Context context, String instructions, String prompt,
+                                    AssistantClient.PlanCallback callback) {
+-        String key = SecureStore.loadXaiKey(context);
+-        if (key.isEmpty()) { callback.onError("Add an xAI API key first."); return; }
+         AiSelection selection = ModelLibraryStore.providerDefault(context, id());
+-        ApiKeyProviderClient.complete(context, id(), key, AiSelections.resolve(selection),
+-                instructions, prompt, callback);
++        withCredential(context, callback::onError,
++                key -> ApiKeyProviderClient.complete(context, id(), key, AiSelections.resolve(selection),
++                        instructions, prompt, callback));
++    }
++
++    private static final java.util.concurrent.ExecutorService CREDENTIALS =
++            java.util.concurrent.Executors.newSingleThreadExecutor();
++
++    /**
++     * A developer API key wins when one is saved. Otherwise the SuperGrok OAuth access token is
++     * used as the Bearer credential, refreshed off the main thread first when near expiry.
++     */
++    private static void withCredential(Context context, java.util.function.Consumer<String> onError,
++                                       java.util.function.Consumer<String> use) {
++        String key = SecureStore.loadXaiKey(context);
++        if (!key.isEmpty()) { use.accept(key); return; }
++        if (!SecureStore.hasSuperGrokSession(context)) {
++            onError.accept("Add an xAI API key or sign in with SuperGrok in Settings > AI Providers first.");
++            return;
++        }
++        CREDENTIALS.execute(() -> {
++            try {
++                String token = SuperGrokAuth.validAccessToken(context, false);
++                if (token.isEmpty()) onError.accept("Sign in with SuperGrok again.");
++                else use.accept(token);
++            } catch (SuperGrokAuth.AuthException e) {
++                onError.accept(e.getMessage());
++            } catch (Exception e) {
++                onError.accept("Could not reach xAI. Check the connection and try again.");
++            }
++        });
+     }
+ }
+-- 
+2.47.3
+
+From 067270fb45cd0433009f254fae2ab87cadcabdaa Mon Sep 17 00:00:00 2001
+From: patch <patch@local>
+Date: Fri, 16 Oct 2026 23:22:04 +0100
+Subject: [PATCH 4/5] AiProvidersActivity: SuperGrok sign-in/sign-out in the
+ xAI connection dialog
+
+---
+ .../orbit/assistant/AiProvidersActivity.java  | 80 +++++++++++++++++++
+ 1 file changed, 80 insertions(+)
+
+diff --git a/app/src/main/java/com/orbit/assistant/AiProvidersActivity.java b/app/src/main/java/com/orbit/assistant/AiProvidersActivity.java
+index 44f3ceb..dde29f9 100644
+--- a/app/src/main/java/com/orbit/assistant/AiProvidersActivity.java
++++ b/app/src/main/java/com/orbit/assistant/AiProvidersActivity.java
+@@ -604,6 +604,19 @@ public final class AiProvidersActivity extends Activity {
+         inputLp.topMargin = UiKit.dp(this, 10);
+         wrap.addView(input, inputLp);
+ 
++        // Fork patch: SuperGrok OAuth as an alternative to a developer key (xAI only).
++        Button superGrok = null;
++        if (!anthropic) {
++            boolean signedIn = SecureStore.hasSuperGrokSession(this);
++            superGrok = new Button(this);
++            superGrok.setAllCaps(false);
++            superGrok.setText(signedIn ? "Sign out of SuperGrok" : "Or sign in with SuperGrok (experimental)");
++            LinearLayout.LayoutParams sgLp = new LinearLayout.LayoutParams(
++                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
++            sgLp.topMargin = UiKit.dp(this, 12);
++            wrap.addView(superGrok, sgLp);
++        }
++
+         AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                 .setTitle(name + " connection")
+                 .setView(wrap)
+@@ -641,10 +654,77 @@ public final class AiProvidersActivity extends Activity {
+             refreshCards();
+         });
+         AlertDialog dialog = builder.create();
++        if (superGrok != null) {
++            superGrok.setOnClickListener(v -> {
++                dialog.dismiss();
++                if (SecureStore.hasSuperGrokSession(this)) {
++                    SuperGrokAuth.signOut(this);
++                    Toast.makeText(this, "Signed out of SuperGrok", Toast.LENGTH_SHORT).show();
++                    refreshCards();
++                } else {
++                    startSuperGrokSignIn();
++                }
++            });
++        }
+         UiKit.styleOrbitDialog(dialog, this, false);
+         dialog.show();
+     }
+ 
++    /** Device-code sign-in: show the code, open xAI's page, poll until approved or cancelled. */
++    private void startSuperGrokSignIn() {
++        Toast.makeText(this, "Starting SuperGrok sign-in…", Toast.LENGTH_SHORT).show();
++        SuperGrokAuth.start(new SuperGrokAuth.StartCallback() {
++            @Override public void onCode(SuperGrokAuth.DeviceCode code) {
++                if (isFinishing() || isDestroyed()) { SuperGrokAuth.cancel(); return; }
++                TextView body = UiKit.text(AiProvidersActivity.this,
++                        "Open xAI's sign-in page and confirm this code:\n\n" + code.userCode
++                                + "\n\nOrbit is waiting for approval. Tokens are encrypted with Android Keystore and never backed up.",
++                        14, UiKit.TEXT, false);
++                int pad = UiKit.dp(AiProvidersActivity.this, 22);
++                body.setPadding(pad, UiKit.dp(AiProvidersActivity.this, 8), pad, 0);
++                AlertDialog wait = new AlertDialog.Builder(AiProvidersActivity.this)
++                        .setTitle("Sign in with SuperGrok")
++                        .setView(body)
++                        .setCancelable(false)
++                        .setNegativeButton("Cancel", (d, w) -> SuperGrokAuth.cancel())
++                        .setPositiveButton("Open browser", null)
++                        .create();
++                UiKit.styleOrbitDialog(wait, AiProvidersActivity.this, false);
++                wait.show();
++                wait.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
++                    try {
++                        startActivity(new Intent(Intent.ACTION_VIEW,
++                                android.net.Uri.parse(code.browserUrl())));
++                    } catch (Exception e) {
++                        Toast.makeText(AiProvidersActivity.this, "No browser available",
++                                Toast.LENGTH_LONG).show();
++                    }
++                });
++                SuperGrokAuth.awaitApproval(AiProvidersActivity.this, code, new SuperGrokAuth.DoneCallback() {
++                    @Override public void onSignedIn() {
++                        if (wait.isShowing()) wait.dismiss();
++                        Toast.makeText(AiProvidersActivity.this, "Signed in with SuperGrok",
++                                Toast.LENGTH_SHORT).show();
++                        ProviderCatalogRepository.refreshAsync(AiProvidersActivity.this,
++                                Prefs.PROVIDER_XAI, (changed, error) -> runOnUiThread(() -> {
++                                    if (!error.isEmpty()) Toast.makeText(AiProvidersActivity.this,
++                                            error, Toast.LENGTH_LONG).show();
++                                    refreshCards();
++                                }));
++                    }
++                    @Override public void onError(String message) {
++                        if (wait.isShowing()) wait.dismiss();
++                        Toast.makeText(AiProvidersActivity.this, message, Toast.LENGTH_LONG).show();
++                        refreshCards();
++                    }
++                });
++            }
++            @Override public void onError(String message) {
++                Toast.makeText(AiProvidersActivity.this, message, Toast.LENGTH_LONG).show();
++            }
++        });
++    }
++
+     private Button primaryButton(String text) {
+         Button b = new Button(this);
+         b.setText(text);
+-- 
+2.47.3
+
+From c8d3571bea79f8c66bccd702469ea219b3226086 Mon Sep 17 00:00:00 2001
+From: patch <patch@local>
+Date: Fri, 16 Oct 2026 23:22:12 +0100
+Subject: [PATCH 5/5] docs: describe experimental SuperGrok sign-in storage
+
+---
+ docs/PRIVACY.md | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/docs/PRIVACY.md b/docs/PRIVACY.md
+index 0c3d2cd..85c83f1 100644
+--- a/docs/PRIVACY.md
++++ b/docs/PRIVACY.md
+@@ -51,6 +51,7 @@ Smart Vault's index (recognised text, page text, meaning vectors and job state)
+ - ChatGPT sign-in (from v0.8.3.0-beta.1) uses OAuth with PKCE in the system browser. For the length of one sign-in only, Orbit listens on `127.0.0.1` (port 1455, or 1457 if busy) for OpenAI's redirect, checks that it carries the exact random state Orbit created, exchanges the code, and closes the listener. Nothing off the phone can reach that address. The PKCE verifier is kept only in memory. The one-time-code sign-in remains available as a fallback, and Orbit never switches between the two on its own.
+ - The provider, model and strength a request is sent with are chosen by the user per chat. Orbit does not route a request to a different model, and when an account cannot use a model Orbit says so rather than answering with another one. The one exception is a chat the user sets to Auto, where Orbit chooses among the providers the user allowed, before sending, and records the choice.
+ - Anthropic and xAI developer API keys are encrypted with provider-specific Android Keystore keys, with no plaintext fallback. They are never redisplayed after saving, placed in model metadata, sent to another provider, logged, diagnosed or backed up.
++- (Fork patch, experimental) xAI can alternatively be connected with SuperGrok device-code sign-in at `auth.x.ai`. The resulting access and refresh tokens are encrypted with their own Android Keystore key, with no plaintext fallback, excluded from backups, never logged or shown. Sign-out deletes them from the phone (server-side revocation is not implemented). The client id, endpoints and scope are unofficial and unverified, and API access may be refused (HTTP 403) on some subscription tiers.
+ - OpenRouter (from v0.8.3.0-beta.6) is connected by signing in on OpenRouter's own page in the system browser (OAuth with S256 PKCE) or, as a fallback, by entering an API key. During one sign-in only, Orbit listens on a random port on the phone's loopback address (`127.0.0.1`, and `::1` where available) for OpenRouter's redirect, accepts only the exact random state Orbit put in that address, exchanges the one-time code once, and closes the listener. The PKCE verifier and state stay in memory. The resulting user-controlled key, like a typed one, is Keystore-encrypted with no plaintext fallback, never redisplayed, logged, diagnosed or backed up. Disconnecting removes it from the phone; revoking the key itself is done in the OpenRouter account.
+ - Extension `secret` and `secret_url` fields are encrypted with Android Keystore-backed AES/GCM and fail closed if secure storage is unavailable.
+ - The optional private-relay access token prefers Keystore-backed encryption. Current compatibility behavior can fall back to Orbit's app-private preferences if Keystore persistence fails. Do not reuse a high-value provider key as this relay token; keep the provider key on the relay server.
+-- 
+2.47.3
+
